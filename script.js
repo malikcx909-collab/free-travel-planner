@@ -1,7 +1,10 @@
 const COUNTRY_LIST_API = "https://api.first.org/data/v1/countries?limit=300";
 const COUNTRY_DETAILS_API = "https://countriesnow.space/api/v0.1/countries/info?returns=flag,unicodeFlag,dialCode,currency,iso2,iso3";
 const COUNTRY_CITIES_API = "https://countriesnow.space/api/v0.1/countries";
-const HOLIDAY_API = (year, countryCode) => `https://openholidaysapi.org/PublicHolidays?countryIsoCode=${countryCode}&languageIsoCode=EN&validFrom=${year}-01-01&validTo=${year}-12-31`;
+
+// Generate this file with generate_holidays.py and upload it to the data folder.
+const HOLIDAY_YEAR = 2026;
+const HOLIDAY_DATA_URL = `./data/holidays-${HOLIDAY_YEAR}.json`;
 
 const STORAGE_KEYS = {
   favorites: "wanderlist-favorites",
@@ -11,7 +14,10 @@ const STORAGE_KEYS = {
 
 const state = {
   countries: [],
+  holidays: {},
+  holidaysLoaded: false,
   selectedCountry: null,
+  holidayDataPromise: null,
   favorites: readStorage(STORAGE_KEYS.favorites, []),
   checklist: readStorage(STORAGE_KEYS.checklist, [
     { id: createId(), text: "Check passport validity", done: false },
@@ -40,13 +46,15 @@ const elements = {
 
 init();
 
-function init() {
+async function init() {
   elements.notes.value = readStorage(STORAGE_KEYS.notes, "");
   updateCharacterCount();
   renderFavorites();
   renderChecklist();
   bindEvents();
-  loadCountries();
+
+  state.holidayDataPromise = loadHolidayData();
+  await Promise.all([loadCountries(), state.holidayDataPromise]);
 }
 
 function bindEvents() {
@@ -62,41 +70,88 @@ function bindEvents() {
 
 async function loadCountries() {
   setSearchStatus("Loading countries...");
+
   try {
     const [listResponse, detailResponse, citiesResponse] = await Promise.all([
       fetch(COUNTRY_LIST_API),
       fetch(COUNTRY_DETAILS_API),
       fetch(COUNTRY_CITIES_API)
     ]);
-    if (!listResponse.ok || !detailResponse.ok || !citiesResponse.ok) throw new Error("Country service returned an error.");
 
-    const listPayload = await listResponse.json();
-    const detailPayload = await detailResponse.json();
-    const citiesPayload = await citiesResponse.json();
-    const detailsByCode = new Map((detailPayload.data || []).map((country) => [country.iso2, country]));
-    const citiesByCode = new Map((citiesPayload.data || []).map((country) => [country.iso2, country]));
+    if (!listResponse.ok || !detailResponse.ok || !citiesResponse.ok) {
+      throw new Error("Country service returned an error.");
+    }
+
+    const [listPayload, detailPayload, citiesPayload] = await Promise.all([
+      listResponse.json(),
+      detailResponse.json(),
+      citiesResponse.json()
+    ]);
+
+    const detailsByCode = new Map(
+      (detailPayload.data || []).map((country) => [country.iso2, country])
+    );
+    const citiesByCode = new Map(
+      (citiesPayload.data || []).map((country) => [country.iso2, country])
+    );
 
     state.countries = Object.entries(listPayload.data || {})
       .map(([code, country]) => {
         const details = detailsByCode.get(code) || {};
         const cityData = citiesByCode.get(code) || {};
+
         return {
-          name: { common: country.country, official: country.country },
+          name: {
+            common: country.country,
+            official: country.country
+          },
           cca2: code,
           region: country.region || "Destination",
-          flags: { svg: details.flag || "", png: details.flag || "" },
+          flags: {
+            svg: details.flag || "",
+            png: details.flag || ""
+          },
           currency: details.currency || "Not available",
           dialCode: details.dialCode || "Not available",
-          cities: cityData.cities || []
+          cities: Array.isArray(cityData.cities) ? cityData.cities : []
         };
       })
       .filter((country) => country.name.common && country.cca2)
       .sort((a, b) => a.name.common.localeCompare(b.name.common));
 
-    setSearchStatus(`${state.countries.length} destinations ready. Start typing to search.`);
+    setSearchStatus(
+      `${state.countries.length} destinations ready. Start typing to search.`
+    );
   } catch (error) {
     console.error(error);
-    setSearchStatus("Could not load countries. Check your connection and refresh the page.", true);
+    setSearchStatus(
+      "Could not load countries. Check your connection and refresh the page.",
+      true
+    );
+  }
+}
+
+async function loadHolidayData() {
+  try {
+    const response = await fetch(HOLIDAY_DATA_URL, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Holiday file returned HTTP ${response.status}.`);
+    }
+
+    const payload = await response.json();
+    const rawData = payload.data || payload;
+
+    state.holidays = Object.fromEntries(
+      Object.entries(rawData).map(([countryCode, holidays]) => [
+        countryCode.toUpperCase(),
+        Array.isArray(holidays) ? holidays : []
+      ])
+    );
+    state.holidaysLoaded = true;
+  } catch (error) {
+    console.warn("Local holiday data unavailable:", error);
+    state.holidays = {};
+    state.holidaysLoaded = false;
   }
 }
 
@@ -106,7 +161,9 @@ function handleSearch(event) {
 
   if (!query) {
     elements.countryResults.replaceChildren();
-    setSearchStatus(`${state.countries.length || "Many"} destinations ready. Start typing to search.`);
+    setSearchStatus(
+      `${state.countries.length || "Many"} destinations ready. Start typing to search.`
+    );
     return;
   }
 
@@ -116,19 +173,26 @@ function handleSearch(event) {
         country.name.common,
         country.name.official,
         country.region,
-        country.subregion,
-        ...(country.capital || [])
-      ].join(" ").toLowerCase();
+        ...(country.cities || []).slice(0, 20)
+      ]
+        .join(" ")
+        .toLowerCase();
+
       return searchable.includes(query);
     })
     .slice(0, 12);
 
   renderSearchResults(matches);
-  setSearchStatus(matches.length ? `${matches.length} matching destination${matches.length === 1 ? "" : "s"}.` : "No matching countries found.");
+  setSearchStatus(
+    matches.length
+      ? `${matches.length} matching destination${matches.length === 1 ? "" : "s"}.`
+      : "No matching countries found."
+  );
 }
 
 function renderSearchResults(countries) {
   elements.countryResults.replaceChildren();
+
   countries.forEach((country) => {
     const fragment = elements.countryTemplate.content.cloneNode(true);
     const button = fragment.querySelector(".country-result");
@@ -149,22 +213,17 @@ function renderSearchResults(countries) {
 async function selectCountry(country) {
   state.selectedCountry = country;
   renderCountryLoading(country);
-  document.querySelector("#country-detail").scrollIntoView({ behavior: "smooth", block: "center" });
+  elements.countryDetail.scrollIntoView({ behavior: "smooth", block: "center" });
 
-  const holidays = await loadHolidays(country.cca2);
-  renderCountryDetail(country, holidays);
+  if (state.holidayDataPromise) {
+    await state.holidayDataPromise;
+  }
+
+  renderCountryDetail(country, loadHolidays(country.cca2));
 }
 
-async function loadHolidays(countryCode) {
-  const year = new Date().getFullYear();
-  try {
-    const response = await fetch(HOLIDAY_API(year, countryCode));
-    if (!response.ok) throw new Error("Holiday service returned an error.");
-    return (await response.json()).slice(0, 5);
-  } catch (error) {
-    console.warn("Holiday lookup unavailable:", error);
-    return [];
-  }
+function loadHolidays(countryCode) {
+  return state.holidays[countryCode.toUpperCase()] || [];
 }
 
 function renderCountryLoading(country) {
@@ -174,15 +233,20 @@ function renderCountryLoading(country) {
 
 function renderCountryDetail(country, holidays) {
   const cityPreview = country.cities?.slice(0, 3).join(", ") || "No city list available";
-  const cityCount = country.cities?.length ? `${formatNumber(country.cities.length)} listed` : "Not available";
+  const cityCount = country.cities?.length
+    ? `${formatNumber(country.cities.length)} listed`
+    : "Not available";
   const saved = isFavorite(country.cca2);
   const holidayMarkup = holidays.length
-    ? holidays.slice(0, 5).map((holiday) => {
-        const date = holiday.startDate || holiday.date;
-        const name = holiday.name?.[0]?.text || holiday.name || holiday.localName || "Public holiday";
-        return `<span class="holiday-pill"><strong>${formatDate(date)}</strong> ${escapeHTML(name)}</span>`;
-      }).join("")
-    : `<span class="muted-text">Holiday data is unavailable for this destination or this country is not covered by the free holiday service.</span>`;
+    ? holidays
+        .slice(0, 8)
+        .map((holiday) => {
+          const date = holiday.date || holiday.startDate;
+          const name = getHolidayName(holiday);
+          return `<span class="holiday-pill"><strong>${formatDate(date)}</strong> ${escapeHTML(name)}</span>`;
+        })
+        .join("")
+    : `<span class="muted-text">No local holiday entries were found for this destination in the ${HOLIDAY_YEAR} dataset.</span>`;
 
   elements.countryDetail.className = "country-detail";
   elements.countryDetail.innerHTML = `
@@ -198,20 +262,31 @@ function renderCountryDetail(country, holidays) {
           <div class="detail-stat"><span>Example cities</span><span>${escapeHTML(cityPreview)}</span></div>
           <div class="detail-stat"><span>City coverage</span><span>${escapeHTML(cityCount)}</span></div>
           <div class="detail-stat"><span>Country code</span><span>${escapeHTML(country.cca2)}</span></div>
-          <div class="detail-stat"><span>Data source</span><span>Open public data</span></div>
+          <div class="detail-stat"><span>Data source</span><span>Local ${HOLIDAY_YEAR} dataset</span></div>
         </div>
       </div>
       <button class="favorite-button ${saved ? "is-saved" : ""}" id="favorite-button" type="button" aria-pressed="${saved}">
         <span aria-hidden="true">${saved ? "♥" : "♡"}</span> ${saved ? "Saved" : "Save destination"}
       </button>
       <div class="holiday-section">
-        <h4>Public holidays · ${new Date().getFullYear()}</h4>
+        <h4>Public holidays · ${HOLIDAY_YEAR}</h4>
         <div class="holiday-list">${holidayMarkup}</div>
       </div>
     </div>
   `;
 
-  document.querySelector("#favorite-button").addEventListener("click", () => toggleFavorite(country));
+  document
+    .querySelector("#favorite-button")
+    .addEventListener("click", () => toggleFavorite(country));
+}
+
+function getHolidayName(holiday) {
+  if (typeof holiday.name === "string") return holiday.name;
+  if (Array.isArray(holiday.name)) {
+    return holiday.name[0]?.text || holiday.name[0] || "Public holiday";
+  }
+  if (holiday.localName) return holiday.localName;
+  return "Public holiday";
 }
 
 function toggleFavorite(country) {
@@ -220,9 +295,13 @@ function toggleFavorite(country) {
   } else {
     state.favorites = [country, ...state.favorites];
   }
+
   writeStorage(STORAGE_KEYS.favorites, state.favorites);
   renderFavorites();
-  renderCountryDetail(country, []);
+
+  if (state.selectedCountry?.cca2 === country.cca2) {
+    renderCountryDetail(country, loadHolidays(country.cca2));
+  }
 }
 
 function renderFavorites() {
@@ -251,12 +330,17 @@ function renderFavorites() {
 function handleFavoriteClick(event) {
   const button = event.target.closest(".favorite-item");
   if (!button) return;
-  const country = state.favorites.find((item) => item.cca2 === button.dataset.countryCode);
+
+  const country = state.favorites.find(
+    (item) => item.cca2 === button.dataset.countryCode
+  );
   if (!country) return;
+
   if (event.target.closest(".remove-favorite")) {
     toggleFavorite(country);
     return;
   }
+
   selectCountry(country);
 }
 
@@ -268,6 +352,7 @@ function addChecklistItem(event) {
   event.preventDefault();
   const text = elements.checklistInput.value.trim();
   if (!text) return;
+
   state.checklist.push({ id: createId(), text, done: false });
   writeStorage(STORAGE_KEYS.checklist, state.checklist);
   elements.checklistInput.value = "";
@@ -276,6 +361,7 @@ function addChecklistItem(event) {
 
 function renderChecklist() {
   elements.checklist.replaceChildren();
+
   state.checklist.forEach((item) => {
     const listItem = document.createElement("li");
     listItem.className = item.done ? "done" : "";
@@ -291,8 +377,12 @@ function renderChecklist() {
 
 function handleChecklistChange(event) {
   if (event.target.type !== "checkbox") return;
-  const item = state.checklist.find((task) => task.id === event.target.closest("li").dataset.id);
+
+  const item = state.checklist.find(
+    (task) => task.id === event.target.closest("li").dataset.id
+  );
   if (!item) return;
+
   item.done = event.target.checked;
   writeStorage(STORAGE_KEYS.checklist, state.checklist);
   renderChecklist();
@@ -301,8 +391,11 @@ function handleChecklistChange(event) {
 function handleChecklistClick(event) {
   const deleteButton = event.target.closest(".delete-task");
   if (!deleteButton) return;
+
   const item = event.target.closest("li");
-  state.checklist = state.checklist.filter((task) => task.id !== item.dataset.id);
+  state.checklist = state.checklist.filter(
+    (task) => task.id !== item.dataset.id
+  );
   writeStorage(STORAGE_KEYS.checklist, state.checklist);
   renderChecklist();
 }
@@ -339,20 +432,37 @@ function setSearchStatus(message, isError = false) {
 }
 
 function formatNumber(value) {
-  return typeof value === "number" ? new Intl.NumberFormat().format(value) : "Not available";
+  return typeof value === "number"
+    ? new Intl.NumberFormat().format(value)
+    : "Not available";
 }
 
 function formatDate(value) {
+  if (!value) return "Date unavailable";
   const date = new Date(`${value}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric"
+      }).format(date);
 }
 
 function createId() {
-  return globalThis.crypto?.randomUUID?.() || `task-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return (
+    globalThis.crypto?.randomUUID?.() ||
+    `task-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
 }
 
 function escapeHTML(value = "") {
-  return String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#039;", '"': "&quot;" }[character]));
+  return String(value).replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#039;",
+    '"': "&quot;"
+  }[character]));
 }
 
 function readStorage(key, fallback) {
