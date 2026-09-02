@@ -56,10 +56,11 @@ async function init() {
   bindEvents();
 
   state.holidayDataPromise = loadHolidayData();
-  await Promise.all([loadCountries(), state.holidayDataPromise]);
+  await loadCountries();
   bindEnhancements();
   populateEnhancedControls();
   initMap();
+  registerServiceWorker();
 }
 
 function bindEvents() {
@@ -77,21 +78,29 @@ async function loadCountries() {
   setSearchStatus("Loading countries...");
 
   try {
-    const [listResponse, detailResponse, citiesResponse] = await Promise.all([
-      fetch(COUNTRY_LIST_API),
-      fetch(COUNTRY_DETAILS_API),
-      fetch(COUNTRY_CITIES_API)
+    // Load the small essential datasets first so the interface is usable even
+    // when the optional 1 MB city dataset is slow or temporarily unavailable.
+    const [listResponse, detailResponse] = await Promise.all([
+      fetchWithTimeout(COUNTRY_LIST_API, 15000),
+      fetchWithTimeout(COUNTRY_DETAILS_API, 15000)
     ]);
 
-    if (!listResponse.ok || !detailResponse.ok || !citiesResponse.ok) {
+    if (!listResponse.ok || !detailResponse.ok) {
       throw new Error("Country service returned an error.");
     }
 
-    const [listPayload, detailPayload, citiesPayload] = await Promise.all([
+    const [listPayload, detailPayload] = await Promise.all([
       listResponse.json(),
-      detailResponse.json(),
-      citiesResponse.json()
+      detailResponse.json()
     ]);
+
+    let citiesPayload = { data: [] };
+    try {
+      const citiesResponse = await fetchWithTimeout(COUNTRY_CITIES_API, 8000);
+      if (citiesResponse.ok) citiesPayload = await citiesResponse.json();
+    } catch (cityError) {
+      console.warn("Optional city dataset unavailable:", cityError);
+    }
 
     const detailsByCode = new Map(
       (detailPayload.data || []).map((country) => [country.iso2, country])
@@ -140,6 +149,16 @@ async function loadCountries() {
   }
 }
 
+async function fetchWithTimeout(url, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 async function loadHolidayData() {
   try {
     const response = await fetch(HOLIDAY_DATA_URL, { cache: "no-store" });
@@ -157,10 +176,12 @@ async function loadHolidayData() {
       ])
     );
     state.holidaysLoaded = true;
+    updateDatasetStatus();
   } catch (error) {
     console.warn("Local holiday data unavailable:", error);
     state.holidays = {};
     state.holidaysLoaded = false;
+    updateDatasetStatus();
   }
 }
 
@@ -225,6 +246,7 @@ function renderSearchResults(countries) {
 async function selectCountry(country) {
   const requestId = ++state.selectionRequestId;
   state.selectedCountry = country;
+  recordRecentSearch(country);
   renderCountryLoading(country);
   elements.countryDetail.scrollIntoView({ behavior: "smooth", block: "center" });
 
@@ -525,6 +547,7 @@ function updateChecklistProgress() {
   const bar = document.querySelector("#progress-bar");
   if (text) text.textContent = `${percentage}%`;
   if (bar) bar.style.width = `${percentage}%`;
+  updateDashboard();
 }
 
 function handleChecklistChange(event) {
@@ -654,6 +677,26 @@ function bindEnhancements() {
   const budgetInputs = [...document.querySelectorAll(".budget-input")];
 
   applySavedTheme();
+  hydratePopularImages();
+  document.querySelectorAll(".popular-card-button").forEach((button) => {
+    button.addEventListener("click", () => selectPopularTrip(button.dataset.code));
+  });
+  document.querySelectorAll(".popular-card img").forEach((image) => {
+    image.addEventListener("error", async () => {
+      if (image.dataset.retried) return;
+      image.dataset.retried = "true";
+      const card = image.closest(".popular-card");
+      const countryName = card?.querySelector("h3")?.textContent?.trim();
+      if (!countryName) return;
+      const fallback = await loadDestinationImage(countryName);
+      if (fallback?.url) {
+        image.src = fallback.url;
+        image.dataset.sourcePage = fallback.sourcePage || "";
+      } else {
+        image.classList.add("image-fallback");
+      }
+    });
+  });
   themeToggle?.addEventListener("click", toggleTheme);
   regionFilter?.addEventListener("change", handleSearch);
   randomButtons.forEach((button) => button.addEventListener("click", chooseRandomCountry));
@@ -671,6 +714,13 @@ function bindEnhancements() {
 
   loadSavedBudget();
   updateBudget();
+  renderRecentSearches();
+  document.querySelector("#add-template")?.addEventListener("click", addPackingTemplate);
+  document.querySelector("#import-plan")?.addEventListener("click", () => document.querySelector("#import-file")?.click());
+  document.querySelector("#import-file")?.addEventListener("change", importTripPlan);
+  document.querySelector("#reset-plan")?.addEventListener("click", resetPlanner);
+  updateDatasetStatus();
+  updateDashboard();
 }
 
 function populateEnhancedControls() {
@@ -712,6 +762,32 @@ function updateThemeButton() {
   button.setAttribute("aria-label", isDark ? "Switch to light theme" : "Switch to dark theme");
 }
 
+async function hydratePopularImages() {
+  const images = [...document.querySelectorAll(".popular-card img")];
+  await Promise.all(images.map(async (image) => {
+    const card = image.closest(".popular-card");
+    const countryName = card?.querySelector("h3")?.textContent?.trim();
+    if (!countryName) return;
+    const source = await loadDestinationImage(countryName);
+    if (source?.url) {
+      image.src = source.url;
+      image.dataset.sourcePage = source.sourcePage || "";
+    }
+  }));
+}
+
+function selectPopularTrip(code) {
+  const country = state.countries.find((candidate) => candidate.cca2 === code);
+  if (!country) {
+    showToast("Destinations are still loading.");
+    return;
+  }
+  elements.search.value = country.name.common;
+  handleSearch({ target: elements.search });
+  selectCountry(country);
+  document.querySelector("#explore")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 function chooseRandomCountry() {
   if (!state.countries.length) {
     showToast("Countries are still loading.");
@@ -729,6 +805,7 @@ function updateBudget() {
   const totalElement = document.querySelector("#budget-total");
   if (totalElement) totalElement.textContent = formatCurrency(total);
   writeStorage("wanderlist-budget", Object.fromEntries(inputs.map((input) => [input.id, input.value])));
+  updateDashboard();
 }
 
 function loadSavedBudget() {
@@ -780,6 +857,7 @@ function updateHolidayOverlap() {
   notice.textContent = overlaps.length
     ? `Your trip overlaps with ${overlaps.length} public holiday${overlaps.length === 1 ? "" : "s"}: ${overlaps.slice(0, 3).map(getHolidayName).join(", ")}.`
     : "No local public holidays overlap with these dates.";
+  updateDashboard();
 }
 
 function daysBetween(start, end) {
@@ -832,9 +910,69 @@ async function updateMap(country) {
     mapInstance.setView(position, 5, { animate: true });
     if (mapMarker) mapMarker.remove();
     mapMarker = L.marker(position).addTo(mapInstance).bindPopup(`<strong>${escapeHTML(country.name.common)}</strong>`).openPopup();
+    loadWeather(position[0], position[1], country.name.common);
   } catch (error) {
     console.warn("Map location unavailable:", error);
+    renderWeatherMessage("Weather location is unavailable right now.");
   }
+}
+
+async function loadWeather(latitude, longitude, countryName) {
+  const weatherCard = document.querySelector("#weather-card");
+  if (!weatherCard) return;
+  weatherCard.classList.add("is-loading");
+  weatherCard.querySelector("p").textContent = "Loading a current weather snapshot...";
+
+  const params = new URLSearchParams({
+    latitude: String(latitude),
+    longitude: String(longitude),
+    current: "temperature_2m,weather_code,wind_speed_10m",
+    timezone: "auto"
+  });
+
+  try {
+    const response = await fetch(`https://api.open-meteo.com/v1/forecast?${params}`);
+    if (!response.ok) throw new Error(`Weather returned HTTP ${response.status}.`);
+    const payload = await response.json();
+    const current = payload.current;
+    const units = payload.current_units || {};
+    const description = weatherDescription(current.weather_code);
+    weatherCard.classList.remove("is-loading");
+    weatherCard.innerHTML = `
+      <span class="weather-icon" aria-hidden="true">${weatherIcon(current.weather_code)}</span>
+      <div><strong>${escapeHTML(countryName)} weather</strong><p>${escapeHTML(description)} · ${current.temperature_2m}${escapeHTML(units.temperature_2m || "°C")} · Wind ${current.wind_speed_10m}${escapeHTML(units.wind_speed_10m || "km/h")}</p></div>
+    `;
+  } catch (error) {
+    console.warn("Weather unavailable:", error);
+    renderWeatherMessage("Weather data is unavailable right now.");
+  }
+}
+
+function renderWeatherMessage(message) {
+  const weatherCard = document.querySelector("#weather-card");
+  if (!weatherCard) return;
+  weatherCard.classList.remove("is-loading");
+  weatherCard.innerHTML = `<span class="weather-icon" aria-hidden="true">☼</span><div><strong>Destination weather</strong><p>${escapeHTML(message)}</p></div>`;
+}
+
+function weatherDescription(code) {
+  if (code === 0) return "Clear sky";
+  if ([1, 2, 3].includes(code)) return "Partly cloudy";
+  if ([45, 48].includes(code)) return "Foggy";
+  if ([51, 53, 55, 56, 57].includes(code)) return "Drizzle";
+  if ([61, 63, 65, 66, 67].includes(code)) return "Rain";
+  if ([71, 73, 75, 77].includes(code)) return "Snow";
+  if ([80, 81, 82].includes(code)) return "Rain showers";
+  if ([95, 96, 99].includes(code)) return "Thunderstorm";
+  return "Mixed conditions";
+}
+
+function weatherIcon(code) {
+  if (code === 0) return "☀";
+  if ([71, 73, 75, 77].includes(code)) return "❄";
+  if ([95, 96, 99].includes(code)) return "ϟ";
+  if ([61, 63, 65, 80, 81, 82].includes(code)) return "☂";
+  return "☼";
 }
 
 function makeTripPlan() {
@@ -889,4 +1027,179 @@ function showToast(message) {
   toast.classList.add("is-visible");
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove("is-visible"), 2200);
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  navigator.serviceWorker.register("./sw.js").catch((error) => {
+    console.warn("Offline support could not be enabled:", error);
+  });
+}
+
+
+function recordRecentSearch(country) {
+  const recent = readStorage("wanderlist-recent-searches", []);
+  const next = [
+    { code: country.cca2, name: country.name.common },
+    ...recent.filter((item) => item.code !== country.cca2)
+  ].slice(0, 5);
+  writeStorage("wanderlist-recent-searches", next);
+  renderRecentSearches();
+}
+
+function renderRecentSearches() {
+  const container = document.querySelector("#recent-searches");
+  if (!container) return;
+  const recent = readStorage("wanderlist-recent-searches", []);
+  container.replaceChildren();
+  if (!recent.length) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+  const label = document.createElement("span");
+  label.className = "recent-searches-label";
+  label.textContent = "Recent:";
+  container.appendChild(label);
+  recent.forEach((item) => {
+    const button = document.createElement("button");
+    button.className = "recent-search-button";
+    button.type = "button";
+    button.textContent = item.name;
+    button.addEventListener("click", () => {
+      const country = state.countries.find((candidate) => candidate.cca2 === item.code);
+      if (!country) return;
+      elements.search.value = country.name.common;
+      handleSearch({ target: elements.search });
+      selectCountry(country);
+    });
+    container.appendChild(button);
+  });
+}
+
+function updateDatasetStatus() {
+  const status = document.querySelector("#dataset-status");
+  if (!status) return;
+  status.classList.toggle("is-warning", !state.holidaysLoaded);
+  status.textContent = state.holidaysLoaded
+    ? `Holiday data: ${HOLIDAY_YEAR} local dataset ready`
+    : `Holiday data: ${HOLIDAY_YEAR} file unavailable`;
+}
+
+function updateDashboard() {
+  const destination = document.querySelector("#dashboard-destination");
+  const dates = document.querySelector("#dashboard-dates");
+  const budget = document.querySelector("#dashboard-budget");
+  const progress = document.querySelector("#dashboard-progress");
+  if (!destination || !dates || !budget || !progress) return;
+
+  const start = document.querySelector("#start-date")?.value || "";
+  const end = document.querySelector("#end-date")?.value || "";
+  const total = [...document.querySelectorAll(".budget-input")]
+    .reduce((sum, input) => sum + Math.max(0, Number(input.value) || 0), 0);
+  const completed = state.checklist.filter((item) => item.done).length;
+  const checklistProgress = state.checklist.length
+    ? Math.round((completed / state.checklist.length) * 100)
+    : 0;
+
+  destination.textContent = state.selectedCountry?.name?.common || "Not selected";
+  dates.textContent = start && end ? `${formatDate(start)} – ${formatDate(end)}` : "Choose dates";
+  budget.textContent = formatCurrency(total);
+  progress.textContent = `${checklistProgress}%`;
+}
+
+const PACKING_TEMPLATES = {
+  beach: ["Swimwear", "Sunscreen", "Sunglasses", "Sandals", "Reusable water bottle"],
+  winter: ["Warm coat", "Thermal layers", "Gloves and hat", "Waterproof shoes", "Lip balm"],
+  hiking: ["Hiking shoes", "Daypack", "First-aid kit", "Headlamp", "Rain jacket"],
+  business: ["Business outfits", "Laptop and charger", "Travel documents", "Notebook", "Smart shoes"],
+  family: ["Snacks", "Travel games", "Medicine", "Spare clothes", "Child travel documents"]
+};
+
+function addPackingTemplate() {
+  const key = document.querySelector("#packing-template")?.value;
+  const items = PACKING_TEMPLATES[key];
+  if (!items) {
+    showToast("Choose a packing-list template first.");
+    return;
+  }
+  const existing = new Set(state.checklist.map((item) => item.text.toLowerCase()));
+  items.forEach((text) => {
+    if (!existing.has(text.toLowerCase())) state.checklist.push({ id: createId(), text, done: false });
+  });
+  writeStorage(STORAGE_KEYS.checklist, state.checklist);
+  renderChecklist();
+  document.querySelector("#packing-template").value = "";
+  showToast("Packing list added");
+}
+
+function resetPlanner() {
+  if (!window.confirm("Reset your saved Wanderlist plan, including favorites, dates, budget, checklist, and notes?")) return;
+
+  state.favorites = [];
+  state.checklist = [
+    { id: createId(), text: "Check passport validity", done: false },
+    { id: createId(), text: "Research local customs", done: false },
+    { id: createId(), text: "Make a packing list", done: false }
+  ];
+  elements.notes.value = "";
+  ["#start-date", "#end-date", "#flight-cost", "#hotel-cost", "#food-cost", "#activity-cost"].forEach((selector) => {
+    const input = document.querySelector(selector);
+    if (input) input.value = "";
+  });
+  [STORAGE_KEYS.favorites, STORAGE_KEYS.checklist, STORAGE_KEYS.notes, "wanderlist-budget", "wanderlist-recent-searches"].forEach((key) => localStorage.removeItem(key));
+  renderFavorites();
+  renderChecklist();
+  updateCharacterCount();
+  updateBudget();
+  updateHolidayOverlap();
+  renderRecentSearches();
+  showToast("Planner reset");
+}
+
+function importTripPlan(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const plan = JSON.parse(reader.result);
+      if (!plan || typeof plan !== "object") throw new Error("Invalid plan");
+
+      if (Array.isArray(plan.checklist)) {
+        state.checklist = plan.checklist
+          .filter((item) => item && typeof item.text === "string")
+          .map((item) => ({ id: item.id || createId(), text: item.text.slice(0, 100), done: Boolean(item.done) }));
+        writeStorage(STORAGE_KEYS.checklist, state.checklist);
+        renderChecklist();
+      }
+      if (typeof plan.notes === "string") {
+        elements.notes.value = plan.notes.slice(0, 2000);
+        writeStorage(STORAGE_KEYS.notes, elements.notes.value);
+        updateCharacterCount();
+      }
+      if (plan.budget && typeof plan.budget === "object") {
+        Object.entries(plan.budget).forEach(([id, value]) => {
+          const input = document.querySelector(`#${id}`);
+          if (input) input.value = Math.max(0, Number(value) || 0);
+        });
+        updateBudget();
+      }
+      if (plan.departure) document.querySelector("#start-date").value = plan.departure;
+      if (plan.returnDate) document.querySelector("#end-date").value = plan.returnDate;
+      updateHolidayOverlap();
+
+      if (plan.countryCode) {
+        const country = state.countries.find((candidate) => candidate.cca2 === plan.countryCode);
+        if (country) selectCountry(country);
+      }
+      showToast("Trip plan imported");
+    } catch (error) {
+      console.warn("Could not import trip plan:", error);
+      showToast("That file is not a valid Wanderlist plan.");
+    } finally {
+      event.target.value = "";
+    }
+  };
+  reader.readAsText(file);
 }
