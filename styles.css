@@ -419,3 +419,24 @@ body.dark-theme .card-meta span { color: var(--ink); background: rgba(255,255,25
   .popular-grid { grid-template-columns: 1fr; }
   .popular-card img { height: 190px; }
 }
+
+/* Popular places gallery inside the selected destination card */
+.popular-places-section { grid-column: 1 / -1; margin-top: 10px; padding-top: 25px; border-top: 1px solid var(--line); }
+.places-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+.places-heading h4 { margin: 0; color: var(--forest); font: 700 1.45rem/1.1 "Playfair Display", Georgia, serif; }
+.places-note { color: var(--muted); font-size: .75rem; }
+.places-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.place-card { overflow: hidden; min-width: 0; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); }
+.place-image { display: block; width: 100%; height: 138px; object-fit: cover; background: var(--sage); }
+.place-image.image-fallback { background: linear-gradient(135deg, #dfe8df, #a9c0b2); }
+.place-card-body { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; }
+.place-card-body h5 { margin: 0; color: var(--forest); font-size: .88rem; }
+.place-credit { flex: 0 0 auto; color: var(--sage-dark); font-size: .62rem; text-decoration: underline; }
+body.dark-theme .places-heading h4, body.dark-theme .place-card-body h5 { color: var(--ink); }
+body.dark-theme .place-card { background: var(--cream); }
+body.dark-theme .place-image.image-fallback { background: linear-gradient(135deg, #274d43, #446c5d); }
+@media (max-width: 680px) {
+  .places-heading { align-items: start; flex-direction: column; gap: 4px; }
+  .places-grid { grid-template-columns: 1fr; }
+  .place-image { height: 175px; }
+}
