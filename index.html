@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="A free travel planner powered by public APIs.">
+  <title>Wanderlist | Free Travel Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="script.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="container nav-wrap">
+      <a class="brand" href="#top" aria-label="Wanderlist home">
+        <span class="brand-mark" aria-hidden="true">✦</span>
+        <span>Wanderlist</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#explore">Explore</a>
+        <a href="#planner">My planner</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Plan more. Spend less.</p>
+          <h1>Your next great trip starts with a little curiosity.</h1>
+          <p class="hero-text">Explore countries, check public holidays, and save your travel ideas in one calm, simple workspace.</p>
+          <a class="button button-dark" href="#explore">Start exploring <span aria-hidden="true">↓</span></a>
+        </div>
+        <div class="hero-art" aria-label="Abstract travel illustration" role="img">
+          <div class="sun"></div>
+          <div class="mountain mountain-back"></div>
+          <div class="mountain mountain-front"></div>
+          <div class="road"></div>
+          <span class="art-label art-label-one">GO</span>
+          <span class="art-label art-label-two">FAR</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="explore" class="section container">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">01 / Explore</p>
+          <h2>Find a place to begin</h2>
+        </div>
+        <p class="section-intro">Search the world by country. Select a result to see essential details, cities, currencies, and public holidays where coverage is available.</p>
+      </div>
+
+      <div class="search-panel">
+        <label class="sr-only" for="country-search">Search for a country</label>
+        <div class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="country-search" type="search" placeholder="Try Japan, Kenya, Brazil..." autocomplete="off">
+          <button id="clear-search" class="icon-button" type="button" aria-label="Clear search" hidden>×</button>
+        </div>
+        <div id="search-status" class="search-status" role="status" aria-live="polite">Loading countries...</div>
+        <div id="country-results" class="country-results" aria-label="Country search results"></div>
+      </div>
+
+      <div id="country-detail" class="country-detail empty-state">
+        <div class="empty-icon" aria-hidden="true">◎</div>
+        <h3>Choose a country</h3>
+        <p>Your selected destination details will appear here.</p>
+      </div>
+    </section>
+
+    <section id="planner" class="planner-section">
+      <div class="container">
+        <div class="section-heading light-heading">
+          <div>
+            <p class="eyebrow">02 / My planner</p>
+            <h2>Turn inspiration into a plan</h2>
+          </div>
+          <p class="section-intro">Your favorites, notes, and checklist stay saved in this browser—no account required.</p>
+        </div>
+
+        <div class="planner-grid">
+          <section class="planner-card favorites-card" aria-labelledby="favorites-title">
+            <div class="card-heading">
+              <div>
+                <p class="card-kicker">Saved destinations</p>
+                <h3 id="favorites-title">My favorites</h3>
+              </div>
+              <span id="favorite-count" class="count-badge">0</span>
+            </div>
+            <div id="favorites-list" class="favorites-list">
+              <p class="muted-text">Save a country to see it here.</p>
+            </div>
+          </section>
+
+          <section class="planner-card checklist-card" aria-labelledby="checklist-title">
+            <div class="card-heading">
+              <div>
+                <p class="card-kicker">Before you go</p>
+                <h3 id="checklist-title">Trip checklist</h3>
+              </div>
+              <button id="clear-checklist" class="text-button" type="button">Clear done</button>
+            </div>
+            <form id="checklist-form" class="inline-form">
+              <label class="sr-only" for="checklist-input">Add checklist item</label>
+              <input id="checklist-input" type="text" placeholder="Add an item..." maxlength="100">
+              <button class="button button-small" type="submit">Add</button>
+            </form>
+            <ul id="checklist" class="checklist"></ul>
+          </section>
+
+          <section class="planner-card notes-card" aria-labelledby="notes-title">
+            <div class="card-heading">
+              <div>
+                <p class="card-kicker">Your ideas</p>
+                <h3 id="notes-title">Trip notes</h3>
+              </div>
+              <span class="save-indicator" id="save-indicator">Saved locally</span>
+            </div>
+            <label class="sr-only" for="notes">Trip notes</label>
+            <textarea id="notes" rows="7" maxlength="2000" placeholder="Paste ideas, places to eat, or questions to research..."></textarea>
+            <div class="character-count"><span id="character-count">0</span> / 2000</div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-wrap">
+      <p><strong>Wanderlist</strong> — a free travel planning starter project.</p>
+      <p>Data from <a href="https://github.com/firstdotorg/data" target="_blank" rel="noreferrer">First.org</a>, <a href="https://countriesnow.space/" target="_blank" rel="noreferrer">CountriesNow</a>, and <a href="https://openholidaysapi.org/en/" target="_blank" rel="noreferrer">OpenHolidays API</a>.</p>
+    </div>
+  </footer>
+
+  <template id="country-result-template">
+    <button class="country-result" type="button">
+      <img class="result-flag" alt="">
+      <span class="result-copy"><strong class="result-name"></strong><small class="result-region"></small></span>
+      <span class="result-arrow" aria-hidden="true">↗</span>
+    </button>
+  </template>
+</body>
+</html>
+
+
